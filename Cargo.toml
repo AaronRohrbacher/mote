@@ -1,0 +1,12 @@
+[package]
+name = "desktop-icons"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "desktop-icons"
+path = "desktop-icons.rs"
+
+[dependencies]
+gtk = { version = "0.18", features = ["v3_24"] }
+

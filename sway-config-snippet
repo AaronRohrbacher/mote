@@ -1,0 +1,13 @@
+# Desktop Icons for Mote and Chromium
+# Add this to your ~/.config/sway/config
+# 
+# Build: cd /Users/aaronr/mote && make
+# Requires: rust, cargo, gtk+-3.0 dev packages
+
+exec /home/m/desktop-icons
+
+# Make icon windows float and stay on top
+for_window [class="desktop-icons"] floating enable, sticky enable
+
+# Make yad home button window float and stay on top
+for_window [app_id="yad"] floating enable, sticky enable
