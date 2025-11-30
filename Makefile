@@ -1,14 +1,11 @@
-# Default: build for current architecture
 desktop-icons: desktop-icons.rs Cargo.toml
 	cargo build --release
 	cp target/release/desktop-icons desktop-icons
 
-# Cross-compile for Raspberry Pi 4 (64-bit ARM) using Podman
 pi4: docker-build.sh
 	@chmod +x docker-build.sh
 	@./docker-build.sh
 
-# Alternative: try native cross-compile (may not work on macOS)
 pi4-native: desktop-icons.rs Cargo.toml
 	@echo "WARNING: Native cross-compile may fail on macOS due to missing ARM GTK libraries"
 	@echo "Use 'make pi4' for Podman-based build instead"
@@ -30,8 +27,6 @@ check-deps:
 	@echo "Build dependencies OK"
 	@echo ""
 	@echo "Checking runtime dependencies..."
-	@command -v yad >/dev/null 2>&1 || { echo "WARNING: yad not found (needed for home button). Install with: sudo apt install yad"; }
-	@command -v jq >/dev/null 2>&1 || { echo "WARNING: jq not found (needed for home button). Install with: sudo apt install jq"; }
 	@echo "Runtime dependencies OK"
 
 install: desktop-icons

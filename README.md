@@ -3,13 +3,10 @@
 **For Raspberry Pi 4 running Raspberry Pi OS Lite with Wayland/Sway**
 
 ## Files
-- `desktop-icons.rs` - Rust program that creates desktop icons (GTK3)
+- `desktop-icons.rs` - Rust program that creates desktop icons and VNC overlay
 - `Cargo.toml` - Rust project configuration
 - `Makefile` - Build script
-- `home-button.sh` - Home button overlay (runs when Mote is active)
 - `sway-config-snippet` - Add this to your `~/.config/sway/config`
-- `mote.desktop` - Desktop entry for Mote (optional)
-- `chromium.desktop` - Desktop entry for Chromium (optional)
 
 ## Building Options
 
@@ -29,8 +26,8 @@ make pi4
 # 2. Compile the binary inside the container
 # 3. Extract the binary to ./desktop-icons
 
-# Copy the binary and scripts to your Pi home directory
-scp desktop-icons vnc-connect.sh home-button.sh pi@your-pi:~/
+# Copy the binary to your Pi home directory
+scp desktop-icons pi@your-pi:~/
 ```
 
 **Note:** This builds for 64-bit ARM (aarch64). If you're running 32-bit Raspberry Pi OS, you'll need to modify the Dockerfile to use `armv7-unknown-linux-gnueabihf` instead.
@@ -43,7 +40,7 @@ If you must build on the Pi:
 
 1. **Install dependencies:**
    ```bash
-   sudo apt update && sudo apt install rustc cargo libgtk-3-dev pkg-config libcairo2-dev libpango1.0-dev yad jq
+   sudo apt update && sudo apt install rustc cargo libgtk-3-dev libgtk-layer-shell-dev pkg-config libcairo2-dev libpango1.0-dev libgdk-pixbuf2.0-dev libglib2.0-dev
    ```
    **Warning:** This installs ~150 packages (~1GB). Consider cross-compiling instead.
 
@@ -56,8 +53,9 @@ If you must build on the Pi:
 ## Runtime Dependencies (Much Lighter)
 
 Once you have the binary, you only need runtime libraries on the Pi:
-- **Raspberry Pi OS:** `sudo apt install libgtk-3-0 libcairo2 libpango-1.0-0 libgdk-pixbuf-2.0-0 libglib2.0-0 yad jq tigervnc-standalone-server`
+- **Raspberry Pi OS:** `sudo apt install libgtk-3-0 libgtk-layer-shell0 libcairo2 libpango-1.0-0 libgdk-pixbuf-2.0-0 libglib2.0-0 tigervnc-standalone-server`
 - These are much smaller (~50MB total)
+- `libgtk-layer-shell0` is required for the home button overlay
 - `tigervnc-standalone-server` provides `vncpasswd` utility for creating VNC password files
 
 **If you get "cannot execute: required file not found":**
@@ -71,7 +69,7 @@ Once you have the binary, you only need runtime libraries on the Pi:
 
 2. **Install runtime dependencies:**
    ```bash
-   sudo apt install libgtk-3-0 libcairo2 libpango-1.0-0 yad jq
+   sudo apt install libgtk-3-0 libgtk-layer-shell0 libcairo2 libpango-1.0-0 libgdk-pixbuf-2.0-0 libglib2.0-0 tigervnc-standalone-server
    ```
 
 3. **Add to your Sway config:**
@@ -79,7 +77,7 @@ Once you have the binary, you only need runtime libraries on the Pi:
    
    **Important:** Update the path in the config snippet if your username is not `m` (e.g., `/home/pi/desktop-icons`)
    
-   Files should be in your home directory: `desktop-icons`, `vnc-connect.sh`, `home-button.sh`
+   The binary should be in your home directory: `desktop-icons`
 
 4. **Reload Sway:**
    `$mod+Shift+c` or `swaymsg reload`
@@ -97,8 +95,4 @@ Once you have the binary, you only need runtime libraries on the Pi:
 - Icon positions: Edit `desktop-icons.rs` (x, y coordinates in `main()`)
 - Icon size: Edit `desktop-icons.rs` (default size in `set_default_size()`)
 - Commands: Edit the command strings in `desktop-icons.rs`
-- VNC password: 
-  1. Edit `desktop-icons.rs` (line 58) and replace `"your-password"` with your actual VNC password
-  2. Rebuild: `make pi4`
-  
-  The password is stored directly in the code and passed to ssvncviewer via stdin.
+- VNC password: Edit `desktop-icons.rs` (line 88) and replace `"KonstaKANG"` with your actual VNC password, then rebuild: `make pi4`

@@ -8,5 +8,7 @@ name = "desktop-icons"
 path = "desktop-icons.rs"
 
 [dependencies]
-gtk = { version = "0.18", features = ["v3_24"] }
+gtk = { version = "0.17", features = ["v3_24"] }
+glib = "0.17"
+gtk-layer-shell = "0.6"
 
