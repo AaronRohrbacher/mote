@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Mote Remote</string>
+    <string name="accessibility_description">Allows Mote Remote to inject touch events from your Pi</string>
+</resources>
