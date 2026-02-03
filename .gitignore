@@ -1,0 +1,12 @@
+# Rust build artifacts
+/target/
+
+# Editor/IDE
+.DS_Store
+*.swp
+*.swo
+*~
+
+# Temporary files
+/tmp/
+*.log

@@ -1,6 +1,0 @@
-<?xml version="1.0" encoding="utf-8"?>
-<resources>
-    <style name="Theme.MoteRemote" parent="android:Theme.NoTitleBar">
-        <item name="android:windowBackground">#1a1a2e</item>
-    </style>
-</resources>
