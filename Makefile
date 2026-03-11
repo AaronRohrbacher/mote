@@ -32,9 +32,21 @@ check-deps:
 install: desktop-icons
 	cp desktop-icons /usr/local/bin/ || cp desktop-icons ~/.local/bin/
 
+# RDP integration test: real RDP server + client, assert desktop loads (screenshot).
+# Requires: Docker or Podman with compose (e.g. docker compose or podman-compose).
+rdp-test:
+	@chmod +x test-rdp-desktop-loads.sh
+	@if command -v docker >/dev/null 2>&1 && docker compose version >/dev/null 2>&1; then \
+		docker compose -f docker-compose.rdp-test.yml up --abort-on-container-exit; \
+	elif command -v podman-compose >/dev/null 2>&1; then \
+		podman-compose -f docker-compose.rdp-test.yml up --abort-on-container-exit; \
+	else \
+		echo "Need 'docker compose' or 'podman-compose' to run RDP integration test"; exit 1; \
+	fi
+
 clean:
 	cargo clean
 	rm -f desktop-icons
 
-.PHONY: install clean check-deps pi4 pi4-native
+.PHONY: install clean check-deps pi4 pi4-native rdp-test
 

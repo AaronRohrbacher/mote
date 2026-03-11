@@ -1,0 +1,28 @@
+---
+description: Mote project facts and standards - always apply to avoid repeated mistakes
+alwaysApply: true
+---
+
+# Mote Project
+
+Raspberry Pi 4 touchscreen remote-desktop appliance (7" 800x480 display).
+
+## Target Platform
+
+- **OS**: Raspberry Pi OS based on **Debian Trixie** (NOT Bookworm)
+- **Display**: Wayland (Sway compositor) — NO X11 on either device
+- **RDP client**: `freerdp3-sdl` (binary `sdl-freerdp3`) — the SDL client replaced the deprecated `wlfreerdp3` Wayland client as of FreeRDP 3.0
+
+## Remote Host
+
+- Runs **KRDP** (KDE RDP server), port 3389, NLA auth
+- NOT krfb, NOT x11vnc, NOT xrdp
+
+## First-Time Accuracy
+
+- Research package names, binary paths, and API details BEFORE writing code
+- Verify against the actual target distro (Trixie), not Bookworm or generic Debian
+- When unsure, check the real package file list (e.g. packages.debian.org filelist) to confirm binary names
+- Do not guess — look it up. Getting it wrong wastes a build-deploy cycle on a Pi
+- Always read the actual man page for command syntax before writing commands (e.g. FreeRDP3 uses /cert:ignore not /cert-ignore)
+- Ask clarifying questions up front rather than assuming

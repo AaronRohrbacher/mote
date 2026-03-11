@@ -4,6 +4,7 @@ set -e
 
 echo "Building for Raspberry Pi 4 using Podman..."
 
+podman rm -f mote-temp 2>/dev/null || true
 podman build -t mote-builder .
 podman create --name mote-temp mote-builder
 podman cp mote-temp:/build/target/aarch64-unknown-linux-gnu/release/desktop-icons ./desktop-icons

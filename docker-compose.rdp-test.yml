@@ -1,0 +1,35 @@
+# Integration test: RDP server + client. Client must connect and load desktop (screenshot proof).
+# Run: docker-compose -f docker-compose.rdp-test.yml up --abort-on-container-exit; docker-compose -f docker-compose.rdp-test.yml down
+
+services:
+  xrdp:
+    image: satishweb/xrdp:latest
+    environment:
+      GUEST_PASS: guest
+    ports:
+      - "3389:3389"
+    healthcheck:
+      test: ["CMD", "pgrep", "xrdp"]
+      interval: 2s
+      timeout: 5s
+      retries: 10
+
+  tester:
+    image: debian:bookworm-slim
+    depends_on:
+      xrdp:
+        condition: service_started
+    volumes:
+      - .:/mote:ro
+    working_dir: /mote
+    environment:
+      RDP_HOST: xrdp
+      RDP_USER: guest
+      RDP_PASS: guest
+      DISPLAY: ":99"
+    command: >
+      bash -c "
+        apt-get update -qq && apt-get install -y -qq xvfb rdesktop imagemagick > /dev/null &&
+        chmod +x /mote/test-rdp-desktop-loads.sh &&
+        /mote/test-rdp-desktop-loads.sh
+      "

@@ -27,5 +27,6 @@ ENV PKG_CONFIG_ALLOW_CROSS=1
 ENV PKG_CONFIG_PATH_aarch64_unknown_linux_gnu=/usr/lib/aarch64-linux-gnu/pkgconfig
 ENV PKG_CONFIG_SYSROOT_DIR_aarch64_unknown_linux_gnu=/
 
+RUN cargo test --release --target aarch64-unknown-linux-gnu --bin desktop-icons
 RUN cargo build --release --target aarch64-unknown-linux-gnu --bin desktop-icons
 

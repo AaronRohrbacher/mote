@@ -5,11 +5,12 @@ use gtk::gdk::{Screen, RGBA};
 use gtk_layer_shell::{Edge, Layer};
 use glib::{timeout_add_local, MainLoop, Continue};
 use gtk::gdk::EventMask;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::io::Read;
 use std::env;
 use std::time::{Duration, Instant};
 use std::rc::Rc;
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 
 const MOTE_ACTIVE_FLAG: &str = "/tmp/mote-active";
@@ -138,11 +139,43 @@ impl Icon {
     }
 }
 
+/// RDP command line for dry-run output (KRDP server via sdl-freerdp3).
+fn rdp_command_line(host: &str, user: &str) -> String {
+    format!(
+        "sdl-freerdp3 /u:{} /w:800 /h:480 /f /cert:ignore +multitouch /v:{}",
+        user, host
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rdp_command_has_host() {
+        let cmd = rdp_command_line("10.1.1.3", "tv");
+        assert!(cmd.contains("/v:10.1.1.3"), "missing /v:host: {}", cmd);
+        assert!(cmd.contains("sdl-freerdp3"), "must use sdl-freerdp3: {}", cmd);
+        assert!(cmd.contains("/w:800"), "missing width: {}", cmd);
+        assert!(cmd.contains("/h:480"), "missing height: {}", cmd);
+        assert!(cmd.contains("/f"), "missing fullscreen: {}", cmd);
+        assert!(cmd.contains("/u:tv"), "missing user: {}", cmd);
+        assert!(cmd.contains("+multitouch"), "missing multitouch: {}", cmd);
+    }
+}
+
 fn main() {
+    if env::var("MOTE_DRY_RUN").is_ok() {
+        let host = env::var("ANDROID_HOST").unwrap_or_else(|_| "10.1.1.3".to_string());
+        let user = env::var("MOTE_RDP_USER").unwrap_or_else(|_| "tv".to_string());
+        println!("{}", rdp_command_line(&host, &user));
+        std::process::exit(0);
+    }
+
     log(&format!("desktop-icons starting, args: {:?}", env::args().collect::<Vec<_>>()));
     
     if env::args().any(|a| a == "--mote-view") {
-        log("--mote-view flag detected, launching Mote (scrcpy) view");
+        log("--mote-view flag detected, launching Mote (RDP) view");
         // Create flag file to signal main process to hide icons
         std::fs::write(MOTE_ACTIVE_FLAG, "").ok();
         gtk::init().expect("Failed to initialize GTK");
@@ -240,16 +273,27 @@ fn show_error_overlay(title: &str, message: &str) {
     window.set_keep_above(true);
     window.set_modal(true);
 
+    // Opaque background so the error is always visible (no transparency)
+    let bg = RGBA::new(0.95, 0.95, 0.95, 1.0);
+    unsafe {
+        gtk::ffi::gtk_widget_override_background_color(
+            window.upcast_ref::<gtk::Widget>().to_glib_none().0,
+            gtk::StateFlags::NORMAL.bits(),
+            bg.to_glib_none().0 as *const _,
+        );
+    }
+
     gtk_layer_shell::init_for_window(&window);
     gtk_layer_shell::set_layer(&window, Layer::Overlay);
     gtk_layer_shell::set_anchor(&window, Edge::Top, true);
     gtk_layer_shell::set_anchor(&window, Edge::Bottom, true);
     gtk_layer_shell::set_anchor(&window, Edge::Left, true);
     gtk_layer_shell::set_anchor(&window, Edge::Right, true);
-    gtk_layer_shell::set_margin(&window, Edge::Top, 80);
-    gtk_layer_shell::set_margin(&window, Edge::Bottom, 80);
-    gtk_layer_shell::set_margin(&window, Edge::Left, 160);
-    gtk_layer_shell::set_margin(&window, Edge::Right, 160);
+    // Smaller margins for 800x480 so dialog fits and is visible
+    gtk_layer_shell::set_margin(&window, Edge::Top, 40);
+    gtk_layer_shell::set_margin(&window, Edge::Bottom, 40);
+    gtk_layer_shell::set_margin(&window, Edge::Left, 40);
+    gtk_layer_shell::set_margin(&window, Edge::Right, 40);
     gtk_layer_shell::auto_exclusive_zone_enable(&window);
 
     let main_loop = MainLoop::new(None, false);
@@ -295,47 +339,66 @@ fn show_error_overlay(title: &str, message: &str) {
 fn launch_mote_view() -> MoteOverlay {
     log("launch_mote_view starting");
 
-    // No desktop icons in Mote view - only scrcpy + control overlay
+    // No desktop icons in Mote view - only RDP + control overlay
 
-    // Android device IP (reserved)
-    let android_host = env::var("ANDROID_HOST").unwrap_or_else(|_| "10.1.1.3".to_string());
-    let adb_port = env::var("ADB_PORT").unwrap_or_else(|_| "5555".to_string());
-    let serial = format!("{}:{}", android_host, adb_port);
+    let host = env::var("ANDROID_HOST").unwrap_or_else(|_| "10.1.1.3".to_string());
+    let rdp_user = env::var("MOTE_RDP_USER").unwrap_or_else(|_| "tv".to_string());
+    let rdp_password = env::var("MOTE_RDP_PASSWORD").unwrap_or_else(|_| "k".to_string());
 
-    // Scrcpy: fullscreen, optimized for 800x480 display
-    // -m 480: match display height, greatly improves performance (per scrcpy docs)
-    // -f: fullscreen (no window chrome/borders)
-    // --no-audio: reduce CPU usage
-    let scrcpy_cmd = format!(
-        "adb connect {} && scrcpy -s {} -m 480 -f --no-audio",
-        serial, serial
+    let last_activity = Rc::new(Cell::new(Instant::now()));
+    let screen_is_off = Rc::new(Cell::new(false));
+
+    // Connect to KRDP server on port 3389 (standard RDP). KRDP uses NLA
+    // authentication with username/password. Resolution is set to the 7"
+    // touchscreen native 800x480 via /w: /h: so the server renders at that
+    // size (no client-side scaling needed). +multitouch enables touch
+    // redirection over the RDP protocol.
+    let rdp_cmd = format!(
+        "/u:{} /p:{} /w:800 /h:480 /f /cert:ignore +multitouch /v:{}",
+        rdp_user, rdp_password, host
     );
-    log(&format!("Running: {}", scrcpy_cmd));
-
-    let mut child = match Command::new("sh").arg("-c").arg(&scrcpy_cmd).spawn() {
-        Ok(c) => c,
+    let child = match Command::new("sdl-freerdp3")
+        .args(rdp_cmd.split_whitespace().collect::<Vec<_>>())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => {
+            log(&format!("Running: sdl-freerdp3 {}", rdp_cmd.replace(&rdp_password, "***")));
+            c
+        }
         Err(e) => {
-            log(&format!("Failed to start scrcpy: {}", e));
+            log(&format!("Failed to start sdl-freerdp3: {}", e));
             show_error(
                 "Mote failed",
-                &format!("Could not start scrcpy: {}. Is adb and scrcpy installed?", e),
+                "Could not start RDP client. Install: sudo apt install freerdp3-sdl",
             );
-            return create_control_overlay(&serial);
+            return create_control_overlay(&host, &last_activity, &screen_is_off);
         }
     };
 
     let start = Instant::now();
+    let mut child = child;
+    let mut stderr = child.stderr.take();
     std::thread::spawn(move || {
         let status = child.wait();
         let elapsed = start.elapsed();
         if elapsed < Duration::from_secs(10) {
             if let Ok(exit_status) = status {
                 if !exit_status.success() {
-                    glib::idle_add_local(move || {
-                        show_error(
-                            "Connection failed",
-                            "Could not connect to the Android device. Check that the device is on, USB debugging over network is enabled, and it is reachable at the configured address.",
-                        );
+                    let mut err_text = String::new();
+                    if let Some(ref mut s) = stderr {
+                        let _ = s.read_to_string(&mut err_text);
+                    }
+                    let err_trim = err_text.trim();
+                    let msg = if err_trim.is_empty() {
+                        "Could not connect to KRDP. Check host, port 3389, and credentials."
+                            .to_string()
+                    } else {
+                        format!("RDP connection to KRDP failed:\n{}", err_trim)
+                    };
+                    let title = "Connection failed".to_string();
+                    let _ = glib::idle_add(move || {
+                        show_error(&title, &msg);
                         Continue(false)
                     });
                 }
@@ -346,33 +409,43 @@ fn launch_mote_view() -> MoteOverlay {
     std::thread::sleep(Duration::from_millis(1000));
 
     log("Creating overlay windows");
-    let overlay = create_control_overlay(&serial);
+    let overlay = create_control_overlay(&host, &last_activity, &screen_is_off);
 
     let screen_off_delay = env::var("SCREEN_OFF_DELAY")
         .unwrap_or_else(|_| "120".to_string())
         .parse::<u64>()
         .unwrap_or(120);
 
-    // When screen turns off, show the wake overlay so taps can wake it
+    // Periodically check for inactivity; turn screen off when idle too long,
+    // turn it back on automatically isn't needed (wake overlay handles that).
+    let la = last_activity.clone();
+    let sio = screen_is_off.clone();
     let wake_overlay = overlay.wake_overlay.clone();
-    timeout_add_local(Duration::from_secs(screen_off_delay), move || {
-        log("Screen off timeout fired");
-        turn_screen_off();
-        wake_overlay.show_all();
-        log("Wake overlay shown");
-        Continue(false)
+    timeout_add_local(Duration::from_secs(10), move || {
+        if !sio.get() && la.get().elapsed() >= Duration::from_secs(screen_off_delay) {
+            log("Inactivity timeout - turning screen off");
+            turn_screen_off();
+            wake_overlay.show_all();
+            sio.set(true);
+        }
+        Continue(true)
     });
 
-    log("Scrcpy launched, overlay created");
+    log("RDP launched, overlay created");
     overlay
 }
 
-fn create_control_overlay(serial: &str) -> MoteOverlay {
+fn create_control_overlay(
+    host: &str,
+    last_activity: &Rc<Cell<Instant>>,
+    screen_is_off: &Rc<Cell<bool>>,
+) -> MoteOverlay {
+    let _ = host; // Used by volume buttons when re-enabled
     let window = Window::new(WindowType::Toplevel);
     window.set_decorated(false);
     
-    // Control panel: Vol−, Vol+, Home buttons
-    const CONTROL_WIDTH: i32 = 240;
+    // Control panel: Home only (volume buttons commented out below)
+    const CONTROL_WIDTH: i32 = 96;
     const CONTROL_HEIGHT: i32 = 56;
     const SCREEN_WIDTH: i32 = 800;
     let margin_left = (SCREEN_WIDTH - CONTROL_WIDTH) / 2;
@@ -384,7 +457,6 @@ fn create_control_overlay(serial: &str) -> MoteOverlay {
 
     gtk_layer_shell::init_for_window(&window);
     gtk_layer_shell::set_layer(&window, Layer::Overlay);
-    // Anchor top-left only so we can position in center via margin
     gtk_layer_shell::set_anchor(&window, Edge::Top, true);
     gtk_layer_shell::set_anchor(&window, Edge::Left, true);
     gtk_layer_shell::set_anchor(&window, Edge::Right, false);
@@ -396,37 +468,86 @@ fn create_control_overlay(serial: &str) -> MoteOverlay {
     let button_box = GtkBox::new(Orientation::Horizontal, 12);
     button_box.set_halign(gtk::Align::Center);
 
-    let serial = serial.to_string();
+    // --- Volume buttons disabled (uncomment to restore) ---
+    // To re-enable: uncomment the ssh_user/ssh_password/host bindings,
+    // both volume button blocks, and set CONTROL_WIDTH back to 240.
+    //
+    // let ssh_user = env::var("MOTE_RDP_USER").unwrap_or_else(|_| "tv".to_string());
+    // let ssh_password = env::var("MOTE_RDP_PASSWORD").unwrap_or_else(|_| "k".to_string());
+    // let host = host.to_string();
+    //
+    // let vol_down_btn = Button::new();
+    // vol_down_btn.set_label("Vol −");
+    // vol_down_btn.set_size_request(64, 48);
+    // let h = host.clone();
+    // let u = ssh_user.clone();
+    // let p = ssh_password.clone();
+    // vol_down_btn.connect_clicked(move |_| {
+    //     log("Vol− pressed");
+    //     let h = h.clone();
+    //     let u = u.clone();
+    //     let p = p.clone();
+    //     std::thread::spawn(move || {
+    //         let out = Command::new("sshpass")
+    //             .args(["-p", &p, "ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no", &format!("{}@{}", u, h), "pactl", "set-sink-volume", "@DEFAULT_SINK@", "-5%"])
+    //             .output();
+    //         let (title, body) = match &out {
+    //             Ok(o) if o.status.success() => return,
+    //             Ok(o) => {
+    //                 let msg = String::from_utf8_lossy(if o.stderr.is_empty() { &o.stdout } else { &o.stderr });
+    //                 ("Volume failed".to_string(), format!("SSH to {} failed: {}", h, msg.trim()))
+    //             }
+    //             Err(e) => ("Volume failed".to_string(), format!("Could not run sshpass: {}", e)),
+    //         };
+    //         log(&format!("ERROR: {} - {}", title, body));
+    //         let _ = glib::idle_add(move || {
+    //             show_error(&title, &body);
+    //             Continue(false)
+    //         });
+    //     });
+    // });
+    // button_box.pack_start(&vol_down_btn, false, false, 0);
+    //
+    // let vol_up_btn = Button::new();
+    // vol_up_btn.set_label("Vol +");
+    // vol_up_btn.set_size_request(64, 48);
+    // let h = host.clone();
+    // let u = ssh_user.clone();
+    // let p = ssh_password.clone();
+    // vol_up_btn.connect_clicked(move |_| {
+    //     log("Vol+ pressed");
+    //     let h = h.clone();
+    //     let u = u.clone();
+    //     let p = p.clone();
+    //     std::thread::spawn(move || {
+    //         let out = Command::new("sshpass")
+    //             .args(["-p", &p, "ssh", "-o", "ConnectTimeout=3", "-o", "StrictHostKeyChecking=no", &format!("{}@{}", u, h), "pactl", "set-sink-volume", "@DEFAULT_SINK@", "+5%"])
+    //             .output();
+    //         let (title, body) = match &out {
+    //             Ok(o) if o.status.success() => return,
+    //             Ok(o) => {
+    //                 let msg = String::from_utf8_lossy(if o.stderr.is_empty() { &o.stdout } else { &o.stderr });
+    //                 ("Volume failed".to_string(), format!("SSH to {} failed: {}", h, msg.trim()))
+    //             }
+    //             Err(e) => ("Volume failed".to_string(), format!("Could not run sshpass: {}", e)),
+    //         };
+    //         log(&format!("ERROR: {} - {}", title, body));
+    //         let _ = glib::idle_add(move || {
+    //             show_error(&title, &body);
+    //             Continue(false)
+    //         });
+    //     });
+    // });
+    // button_box.pack_start(&vol_up_btn, false, false, 0);
+    // --- End volume buttons ---
 
-    // Volume Down button
-    let vol_down_btn = Button::new();
-    vol_down_btn.set_label("Vol −");
-    vol_down_btn.set_size_request(64, 48);
-    let s = serial.clone();
-    vol_down_btn.connect_clicked(move |_| {
-        log("Vol− pressed");
-        Command::new("adb").args(["-s", &s, "shell", "input", "keyevent", "KEYCODE_VOLUME_DOWN"]).spawn().ok();
-    });
-    button_box.pack_start(&vol_down_btn, false, false, 0);
-
-    // Volume Up button
-    let vol_up_btn = Button::new();
-    vol_up_btn.set_label("Vol +");
-    vol_up_btn.set_size_request(64, 48);
-    let s = serial.clone();
-    vol_up_btn.connect_clicked(move |_| {
-        log("Vol+ pressed");
-        Command::new("adb").args(["-s", &s, "shell", "input", "keyevent", "KEYCODE_VOLUME_UP"]).spawn().ok();
-    });
-    button_box.pack_start(&vol_up_btn, false, false, 0);
-
-    // Home button - exits Mote view
+    // Home button - exits Mote view (kills RDP client)
     let home_btn = Button::new();
     home_btn.set_label("Home");
     home_btn.set_size_request(64, 48);
     home_btn.connect_clicked(move |_| {
         log("Home pressed - exiting Mote view");
-        Command::new("pkill").args(["-f", "scrcpy"]).spawn().ok();
+        Command::new("pkill").args(["-f", "sdl-freerdp3"]).spawn().ok();
         Command::new("swaymsg").args(["workspace", "1"]).spawn().ok();
         gtk::main_quit();
     });
@@ -446,11 +567,11 @@ fn create_control_overlay(serial: &str) -> MoteOverlay {
     });
     
     // Create trigger zone at top of screen
-    let trigger = create_top_trigger(&window_rc);
+    let trigger = create_top_trigger(&window_rc, last_activity);
     let trigger_rc = Rc::new(trigger);
     
     // Create wake overlay (starts HIDDEN, shown only when screen is off)
-    let wake = create_wake_overlay(&window_rc);
+    let wake = create_wake_overlay(&window_rc, last_activity, screen_is_off);
     let wake_rc = Rc::new(wake);
     
     MoteOverlay {
@@ -462,7 +583,11 @@ fn create_control_overlay(serial: &str) -> MoteOverlay {
 
 /// Fullscreen wake overlay - starts HIDDEN, shown only when screen is off
 /// Tap anywhere to wake screen, then overlay hides itself
-fn create_wake_overlay(control_window: &Rc<Window>) -> Window {
+fn create_wake_overlay(
+    control_window: &Rc<Window>,
+    last_activity: &Rc<Cell<Instant>>,
+    screen_is_off: &Rc<Cell<bool>>,
+) -> Window {
     let wake = Window::new(WindowType::Toplevel);
     wake.set_decorated(false);
     
@@ -488,10 +613,14 @@ fn create_wake_overlay(control_window: &Rc<Window>) -> Window {
     
     let win = control_window.clone();
     let wake_ref = wake.clone();
+    let la = last_activity.clone();
+    let sio = screen_is_off.clone();
     event_box.connect_button_press_event(move |_, _| {
         log("Wake overlay tapped - waking screen and hiding overlay");
         wake_screen();
-        wake_ref.hide(); // Hide wake overlay so scrcpy gets input again
+        wake_ref.hide(); // Hide wake overlay so RDP gets input again
+        la.set(Instant::now());
+        sio.set(false);
         win.show();
         win.present();
         let win_hide = win.clone();
@@ -509,7 +638,10 @@ fn create_wake_overlay(control_window: &Rc<Window>) -> Window {
     wake
 }
 
-fn create_top_trigger(control_window: &Rc<Window>) -> Window {
+fn create_top_trigger(
+    control_window: &Rc<Window>,
+    last_activity: &Rc<Cell<Instant>>,
+) -> Window {
     let trigger = Window::new(WindowType::Toplevel);
     trigger.set_decorated(false);
     
@@ -551,8 +683,10 @@ fn create_top_trigger(control_window: &Rc<Window>) -> Window {
     
     // Handle both mouse and touch events - wake screen on touch
     let win = control_window.clone();
+    let la = last_activity.clone();
     event_box.connect_button_press_event(move |_, _| {
         log("Trigger zone: button press detected");
+        la.set(Instant::now());
         wake_screen();
         win.show();
         win.present(); // Ensure it's raised
@@ -566,8 +700,10 @@ fn create_top_trigger(control_window: &Rc<Window>) -> Window {
     
     // Also connect to motion/enter events as fallback for touch
     let win2 = control_window.clone();
+    let la2 = last_activity.clone();
     event_box.connect_enter_notify_event(move |_, _| {
         log("Trigger zone: enter event detected");
+        la2.set(Instant::now());
         wake_screen();
         win2.show();
         win2.present();
@@ -581,8 +717,10 @@ fn create_top_trigger(control_window: &Rc<Window>) -> Window {
     
     // Also handle touch events via motion notify
     let win3 = control_window.clone();
+    let la3 = last_activity.clone();
     event_box.connect_motion_notify_event(move |_, _| {
         log("Trigger zone: motion/touch detected");
+        la3.set(Instant::now());
         wake_screen();
         win3.show();
         win3.present();
